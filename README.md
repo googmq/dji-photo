@@ -1,175 +1,116 @@
-# Osmo Action GPS Bluetooth Remote Controller (ESP32-C6-Example)
+# ESP32-C6 单键蓝牙相机遥控器
 
-![](https://img.shields.io/badge/version-V1.0.0-red.svg) ![](https://img.shields.io/badge/platform-rtos-blue.svg) ![](https://img.shields.io/badge/license-MIT-purple.svg)
+基于 [DJI Osmo-GPS-Controller-Demo](https://github.com/dji-sdk/Osmo-GPS-Controller-Demo) 的 DJI R SDK 协议，实现 Osmo Action 4 / 5 Pro / 6 的单键拍摄、休眠和唤醒。目标平台为 **ESP32-C6 + ESP-IDF 6.1.1**。
 
-<p align="center">
-  <br>English | <a href="README_CN.md">中文</a>
-</p>
+当前完成的是主机自动测试和固件编译，**尚未连接相机实测**。官方声明的型号支持不等于本项目已完成各型号兼容性验证。
 
-## Introduction
+## 按钮行为
 
-This demo provides a set of code running on the ESP32-C6 development board (based on the ESP-IDF framework), demonstrating how to parse, process, and send the DJI R SDK protocol to control the camera. The example program implements basic remote control functions, including: long-pressing the BOOT button to connect to the nearest (compatible) Osmo Action / Osmo 360 device, single-clicking to control recording, quickly switching modes, and pushing GPS data based on the LC76G GNSS module. Additionally, the program dynamically adjusts the RGB LED display based on the device's status.
+| 相机状态 | 短按 | 长按约 1.5 秒 |
+| --- | --- | --- |
+| 普通照片模式，空闲 | 拍照，保留相机连拍/倒计时设置 | 休眠 |
+| 普通视频模式，未录像 | 开始录像 | 休眠 |
+| 正在录像 | 停止录像 | 先停录，收到结束状态后休眠 |
+| 正在拍照或倒计时 | 忽略重复按键 | 等待结束后休眠，超时则提示失败 |
+| 视频预录制 | 触发拍录键，由相机开始正式录像 | 直接请求休眠 |
+| 已休眠 | **只唤醒**，就绪后再按才拍摄 | 不操作 |
+| 正在连接、确认命令或唤醒 | 忽略，不缓存拍摄 | 忽略 |
+| 离线/结果未知 | 未绑定则连接；已绑定则尝试广播唤醒并重连，本次不拍摄 | 不操作 |
 
-Before reading this document and the code, it is recommended to first review the [Getting Started Guide](docs/getting_started_guide.md).
+长按释放不会产生第二次短按。相机端切换视频/照片模式后，遥控器跟随新状态，**不会主动改模式**。第一版拍摄仅开放普通视频 `0x01` 与照片 `0x05`；慢动作、延时摄影、直播等模式不触发快门。
 
-## Key Features
+## 硬件与环境
 
-- **Protocol Parsing**: The protocol layer demonstrates how to parse the DJI R SDK protocol, which is **platform-independent and easy to port to other development platforms**.
-- **GPS Data Push**: Collect GPS data at a 10Hz frequency using the LC76G GNSS module, parse it, and push it to the camera in real time.
-- **Button Support**: Supports single-click (start/stop recording) and long-press (search for and connect to the nearest camera) operations. In the program, the handling of the button operations is managed by `key_logic`.
-- **RGB LED Support**: Monitors the system status in real time and dynamically adjusts the RGB LED color based on status changes.
-- **Other Features**: Switch the camera to a specific mode, quick switch mode (QS), subscribe to camera status, query camera version, and more.
+默认目标板为 Seeed Studio XIAO ESP32C6（4 MB Flash），直接使用板载硬件：
 
-## Development Environment
+- BOOT 按键：GPIO9，低电平按下，启用上拉。
+- 板载天线：在 BLE 初始化前将 GPIO3、GPIO14 配置为低电平输出；这两个引脚保留给射频开关。
+- RGB 功能默认关闭：XIAO 的 GPIO15 用户灯是普通单色灯，不能使用当前可寻址 RGB 驱动；通过 USB 日志查看状态。
+- USB-C 供电、烧录和主控制台（USB Serial/JTAG）；可输入 `forget` 清除绑定。首次测试无需外接按钮、电池、GPS 或蓝牙模块。
 
-**Software**: ESP-IDF v5.5
+使用其他板卡时核对引脚与 Flash 容量。GPIO9 是启动配置引脚，正常启动时不要一直按住 BOOT。
 
-**Hardware**:
+若切回 DevKitC-1-N8，在 `idf.py menuconfig` 中将 Flash 改为 8 MB，关闭 `Camera Remote` 下的 XIAO 天线初始化，按需启用 GPIO8 RGB，并根据使用的 USB 接口选择主控制台。XIAO 引脚依据见 [官方入门文档](https://wiki.seeedstudio.com/cn/xiao_esp32c6_getting_started/)。
 
-- ESP32-C6-WROOM-1
-- LC76G GNSS Module
-- DJI Osmo 360 or DJI Osmo Action 6 / 5 Pro / 4
+本工程使用 ESP-IDF `>=6.1.0,<6.2.0`，已验证 6.1.1。组件锁定文件记录 `espressif/led_strip` 3.1.1。官方 Demo 原先的 ESP-IDF 5.5 配置不能直接用于当前入口。
 
-The hardware connection involves the connection between the ESP32-C6-WROOM-1 and the LC76G GNSS Module. The specific connections are as follows:
+## 编译与主机测试
 
-- **ESP32-C6 GPIO5** connects to **LC76G RX**
-- **ESP32-C6 GPIO4** connects to **LC76G TX**
-- **ESP32-C6 5V** connects to **LC76G VCC**
-- **ESP32-C6 GND** connects to **LC76G GND**
+在已加载 ESP-IDF 的终端执行：
 
-Please ensure that the pins are correctly connected, especially the TX and RX pins, to ensure proper data transmission.
+```sh
+# 本机已有的环境入口；其他机器请加载自己的 ESP-IDF export.sh。
+source ~/esp/activate-esp-idf.sh
 
-<img title="Hardware Wiring Diagram" src="docs/images/hardware_wiring_diagram.png" alt="Hardware Wiring Diagram" data-align="center" width="711">
-
-## Quick Start
-
-* Install the ESP-IDF toolchain. For installation steps, refer to the documentation below. We recommend installing the ESP-IDF extension for VSCode. You can download the plugin here: [ESP-IDF Plugin - VSCode](https://marketplace.visualstudio.com/items?itemName=espressif.esp-idf-extension)
-
-* Next, check the `.vscode/settings.json` file in the demo to ensure that the IDF-related parameters are configured correctly.
-
-* After setting up the environment, compile and flash the code to the development board. Use the monitor to view real-time logs. You can check the current device state by observing the RGB light status on the development board: red indicates uninitialized, yellow indicates BLE initialization complete, and the device is ready.
-- When the BOOT button is long-pressed, the RGB LED flashes blue, indicating that it is searching for and connecting to the nearest Osmo Action device. A steady blue light indicates that BLE is connected, a steady green light indicates that the protocol is connected and commands can be sent and received, and a steady purple light indicates that the protocol is connected and GPS signal is available.
-
-- When the BOOT button is clicked, the camera starts or stops recording. During long recording sessions, the RGB LED will flash.
-
-## Demo Structure
-
-```
-├── ble              # Bluetooth device layer
-├── data             # Data layer
-├── logic            # Logic layer
-├── protocol         # Protocol layer
-├── main             # Main entry point
-├── utils            # Utility functions
-└── CMakeLists.txt   # Demo build file
+./scripts/test.sh
+./scripts/build.sh
 ```
 
-- **ble**: Responsible for BLE connection between the ESP32 and the camera, as well as data read/write operations.
-- **protocol**: Responsible for encapsulating and parsing protocol frames, ensuring the correctness of data communication.
-- **data**: Responsible for storing parsed data and providing an efficient read/write logic based on Entries for the logic layer to use.
-- **logic**: Implements specific functionalities, such as requesting connections, button operations, GPS data processing, camera status management, command sending, light control, etc.
-- **utils**: Utility class used for tasks like CRC checking.
-- **main**: The entry point of the program.
+主机测试需要 Clang 和 Make，不需要连接开发板或加载 ESP-IDF；默认启用 AddressSanitizer、UndefinedBehaviorSanitizer 及 `-Werror`。
 
-## Program Startup Sequence Diagram
+ESP-IDF 配置从 `sdkconfig.defaults` 生成到 **`build/sdkconfig`**，不再把旧版本生成配置作为源码维护。`idf.py menuconfig` 修改同一构建目录中的配置；如换芯片/容量，请检查配置后重编。
 
-<img title="Program Startup Sequence Diagram" src="docs/images/sequence_diagram_of_program_startup.png" alt="Program Startup Sequence Diagram" data-align="center" width="761">
+`sdkconfig.defaults` 不会覆盖已有 `build/sdkconfig`。旧的 8 MB 构建迁移到 XIAO 时，需要在 menuconfig 中同步选择 4 MB Flash、XIAO 天线初始化、关闭 RGB，并将主控制台设为 USB Serial/JTAG（次控制台设为 None），随后重新编译。
 
-## Protocol Parsing
+构建产物：
 
-The following diagram illustrates the general process of frame parsing in the program:
+- `build/dji_camera_bluetooth_control.bin`：应用固件。
+- `build/dji_camera_bluetooth_control.elf`：调试符号。
+- `build/bootloader/bootloader.bin`、`build/partition_table/partition-table.bin`：启动及分区镜像。
+- `build/flash_args`：本次构建的完整烧录参数。
 
-<img title="Protocol Parsing Sequence Diagram" src="docs/images/sequence_diagram_of_protocol_parsing.png" alt="Protocol Parsing Sequence Diagram" data-align="center" width="500">
+后续接好开发板，把下例端口替换为实际端口，再自行烧录：
 
-For detailed documentation, please refer to: [Protocol Parsing Documentation](docs/protocol.md)
-
-### GPS Data Push Example
-
-The GNRMC and GNGGA data from the LC76G GNSS module supports a maximum update frequency of 10Hz, provided that we send the corresponding command to the module:
-
-```c
-// "$PAIR050,1000*12\r\n" for 1Hz update rate
-// "$PAIR050,500*26\r\n" for 5Hz update rate
-// "$PAIR050,100*22\r\n" for 10Hz update rate
-char* gps_command = "$PAIR050,100*22\r\n";  // (>1Hz only RMC and GGA supported)
-uart_write_bytes(UART_GPS_PORT, gps_command, strlen(gps_command));
+```sh
+idf.py -p /dev/cu.YOUR_PORT flash monitor
 ```
 
-When parsing a large number of similar strings to extract information such as latitude, longitude, and velocity components, it is necessary to filter out invalid data. To reduce inaccuracies caused by drift, positioning errors, and other factors, it is recommended to apply filtering and other necessary processing to the GPS data before sending it. This program currently does not focus on these issues in depth, but in the future, appropriate filtering algorithms and error correction mechanisms can be introduced as needed to ensure the accuracy and reliability of the data.
+请通过 `idf.py flash` 烧录完整工程，不要把应用 bin 当作从地址 0 开始的整片镜像。
 
-Since the parsing process is frequently executed, it is important to be mindful of potential watchdog timeouts during task execution. Therefore, `vTaskDelay` has been appropriately used in the program to reset the watchdog. This program uses a simple parsing method for data pushing demonstration. Please refer to the `Parse_NMEA_Buffer` and `gps_push_data` functions in `gps_logic`.
+## 首次配对及日常操作
 
-When GPS signal is available (indicated by the solid purple RGB light), video recording will begin, and after recording ends, the corresponding data can be viewed on the DJI Mimo app dashboard.
+1. 相机装好存储卡、开启无线连接，升级到当前可用固件；首次测试时附近只开一台目标相机。
+2. 启动开发板，自动扫描信号强度不低于 -80 dBm 的兼容设备，选择信号最强者。
+3. 串口打印四位配对码，在相机屏幕上核对并允许连接。
+4. USB 日志出现 `state=4 error=0` 代表协议连接和状态同步完成，可以短按 BOOT 拍摄。
+5. 授权成功后地址及地址类型写入 NVS，之后只搜索绑定设备。失败后可短按重试，本次重试不拍摄。
+6. 更换相机时，在串口输入 `forget` 并回车。仅离线、休眠或空闲时允许清除绑定并重启；拍摄和过渡期间拒绝操作。
 
-## How to Add a Feature
+恢复连接会重新协商 MTU、发现 FFF0 服务、启用 FFF4 的 CCCD、完成 0019 握手和 1D05 状态订阅。订阅频率为 2 Hz，超过 2 秒没有有效状态就撤销就绪，避免按旧状态误操作。
 
-**Before adding a feature, please make sure you have thoroughly read the [Protocol Parsing Documentation](docs/protocol.md) and [Data Layer Documentation](docs/data_layer.md).**
+以下灯光说明仅适用于另外启用可寻址 RGB 的板卡；默认 XIAO 配置不输出这些灯光，请查看 USB 日志。
 
-### Adding New Command Support
+| 灯光 | 含义 |
+| --- | --- |
+| 绿色常亮 | 已就绪 |
+| 红色闪烁 | 普通视频正在录像 |
+| 蓝色闪烁 | 连接、命令确认、休眠过渡或唤醒中 |
+| 暗蓝常亮 | 已确认相机休眠 |
+| 红色常亮 | 离线或操作失败，查看串口错误 |
 
-When sending or parsing command and response frames, you only need to follow three simple steps:
+日志 `state` 的数值按 `remote/remote_core.h` 顺序：0 离线、1 连接、2 握手、3 同步、4 就绪、5 快门确认、6 等待拍摄结束、7 休眠确认、8 已休眠、9 唤醒。
+`error`：0 无、1 传输/队列失败、2 超时、3 相机拒绝、4 模式不支持、5 状态过期。
 
-- Define the frame structure in `dji_protocol_data_structures`.
+## 实现结构
 
-- Define the triple in `dji_protocol_data_descriptors` and provide the corresponding `creator` and `parser`. If not implemented, you can set them to `NULL`. If the parser function cannot find the corresponding `creator` or `parser`, the process of constructing or parsing the frame will stop.
+- `remote_core`：纯 C 异步状态机、命令序号匹配、休眠发送限制、手势时序保护。
+- `remote_button`：30 ms 消抖、1500 ms 长按与短按互斥，上电按住先等待松开。
+- `remote_wire`：固定内存协议帧、CRC 校验、分片/粘包、WKP 广播和厂商广播识别。
+- `remote_ble`：Bluedroid 适配，回调仅投递事件，控制任务拥有连接和发送状态；保存绑定到 NVS。
+- `remote_app`：启动、GPIO、LED、串口和主循环。
+- `tests/host`：直接运行生产控制核心、协议与 BLE 适配代码，只用测试替身替换 ESP-IDF 硬件边界。
 
-- In the logic layer (`logic`), define the corresponding function, write the business logic, and call the `send_command` function in the command logic (`command_logic`).
+原始官方 `ble/`、`logic/`、`data/`、`protocol/` 和 GPS 示例保留供参考，**不编入当前固件**。生产代码复用官方 `utils/crc/` 实现，并用官方已知帧验证协议字节兼容性。上游版本：`92fe23e5a749f189593f980a26a105c3bb66aa1c`；原始说明见 [README_CN.md](README_CN.md)。
 
-If you add a new `.c` file in the logic layer, make sure to modify the `main/CMakeLists.txt` file.
+## 已知限制
 
-Regarding the `send_command` function, you need to know that: in addition to passing `CmdSet`, `CmdID`, and the frame structure, you also need to pass `CmdType`, which is the frame type, defined in `enums_logic`:
+- 官方广播唤醒要求近期成功连接过，且相机休眠不超过约 **30 分钟**；不保证任意关机时长可唤醒。
+- 模式、相机休眠后 BLE 是否保持、唤醒断线时序及各型号固件差异仍需实机验证。
+- 相机休眠后不发送 GATT 数据；唤醒只发 WKP 广播，不发送 SNAPSHOT 快照键。
+- 若 SDK 的异步完成事件丢失、传输阶段卡住超过 30 秒，遥控器会自动重启恢复；不会补发快门。
+- 超时不会自动重发快门。失败并不证明相机没有执行，先检查相机实际状态，再重试。
+- 第一次配对需要相机处于可发现状态；没有绑定地址时无法定向唤醒一台已经休眠的相机。
+- 绑定使用已授权地址和地址类型；若相机清除记录或改变地址，需要重新配对。
+- 相机照片仍保存在相机存储卡中；不传输照片、不控制曝光参数、不实现 ESP32 自身低功耗休眠。
 
-```c
-typedef enum {
-    CMD_NO_RESPONSE = 0x00,      // Command frame - No response required after sending data
-    CMD_RESPONSE_OR_NOT = 0x01,  // Command frame - Response required, no error if not received
-    CMD_WAIT_RESULT = 0x02,      // Command frame - Response required, error if not received
-
-    ACK_NO_RESPONSE = 0x20,      // Response frame - No response required (00100000)
-    ACK_RESPONSE_OR_NOT = 0x21,  // Response frame - Response required, no error if not received (00100001)
-    ACK_WAIT_RESULT = 0x22       // Response frame - Response required, error if not received (00100010)
-} cmd_type_t;
-```
-
-Therefore, to support the creation of a command or response frame, the creation function should be implemented in the `creator`; to support parsing, the parsing function should be written in the `parser`.
-
-Additionally, the `send_command` function will decide whether to block and wait for data return based on the frame type, which is suitable for both send-receive and send-only scenarios. If direct data reception is required, the `data_wait_for_result_by_cmd` function should be called.
-
-### Modifying Callback Functions
-
-This program mainly uses callback functions in the following places:
-
-- **data** layer: `receive_camera_notify_handler`: Called after receiving a BLE notification to receive the data sent by the camera.
-
-- In **status_logic**: `update_camera_state_handler`: Called by `data.c`'s `receive_camera_notify_handler` to update the camera's status information.
-
-- In **connect_logic**: `receive_camera_disconnect_handler`: Called after a BLE disconnect event to handle unexpected reconnections and active disconnections, as well as state changes.
-
-- In **light_logic**: `led_state_timer_callback` and `led_blink_timer_callback`: Used to control the RGB LED display based on corresponding state changes (the default timer priority is 1).
-
-### Defining Button Functions
-
-In `key_logic`, long-press and single-click events are configured for the BOOT button, with corresponding logic operations implemented. More buttons and functions can be added here. The button scanning task is configured with a priority of 2. It is important to adjust the priority appropriately if other frequently executed tasks exist, as improper priority configuration may lead to unresponsive or non-functional buttons.
-
-### Adding Sleep Function Example
-
-After reading the documentation above, you can try adding a new feature: putting the camera to sleep mode with a single click of the BOOT button.
-
-For detailed implementation, please refer to: [Add Camera Sleep Feature Example Documentation](docs/add_camera_sleep_feature_example.md)
-
-## Reference Documents
-
-For a more comprehensive understanding of the demo, refer to the following documents:
-
-* **Q&A**: [FAQ_for_this_demo](docs/Q&A.md)
-
-- **ESP-IDF**: [ESP-IDF Official GitHub Repository](https://github.com/espressif/esp-idf/)
-
-- **LC76G GNSS Module**: [LC76G GNSS Module - Waveshare Wiki](https://www.waveshare.com/wiki/LC76G_GNSS_Module)
-
-- **ESP32-C6-WROOM-1**: [ESP32-C6-DevKitC-1 v1.2 - ESP32-C6 User Guide](https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32c6/esp32-c6-devkitc-1/user_guide.html)
-
-## About PR
-
-The DJI development team is dedicated to enhancing your development experience and welcomes your contributions. However, please note that PR code reviews may take some time. If you have any questions, feel free to contact us via email.
-
+完整验证记录与实机检查表见 [docs/VALIDATION.md](docs/VALIDATION.md)。

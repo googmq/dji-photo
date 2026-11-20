@@ -1,19 +1,12 @@
-idf_component_register(SRCS "app_main.c" 
-                            "../utils/crc/custom_crc16.c" 
-                            "../utils/crc/custom_crc32.c"
-                            "../protocol/dji_protocol_parser.c"
-                            "../protocol/dji_protocol_data_processor.c"
-                            "../protocol/dji_protocol_data_descriptors.c"
-                            "../protocol/dji_protocol_data_structures.c"
-                            "../ble/ble.c"
-                            "../data/data.c"
-                            "../logic/connect_logic.c"
-                            "../logic/command_logic.c"
-                            "../logic/gps_logic.c"
-                            "../logic/status_logic.c"
-                            "../logic/enums_logic.c"
-                            "../logic/key_logic.c"
-                            "../logic/light_logic.c"
-                            "../test/test_gps.c"
-                    PRIV_REQUIRES bt nvs_flash esp_driver_uart esp_driver_gpio led_strip
-                    INCLUDE_DIRS "." "../utils/crc" "../protocol" "../ble" "../data" "../logic" "../test")
+idf_component_register(
+    SRCS "app_main.c"
+         "../remote/remote_core.c"
+         "../remote/remote_wire.c"
+         "../remote/remote_button.c"
+         "../remote/remote_ble.c"
+         "../remote/remote_app.c"
+         "../utils/crc/custom_crc16.c"
+         "../utils/crc/custom_crc32.c"
+    INCLUDE_DIRS "." "../remote" "../utils/crc"
+    PRIV_REQUIRES bt nvs_flash esp_driver_gpio esp_timer esp_system led_strip
+)

@@ -1,19 +1,25 @@
-menu "Example Configuration"
-
-    config EXAMPLE_DUMP_ADV_DATA_AND_SCAN_RESP
-        bool "Dump whole adv data and scan response data in example"
+menu "Camera Remote"
+    config REMOTE_XIAO_ESP32C6
+        bool "Initialize XIAO ESP32C6 onboard antenna"
+        depends on IDF_TARGET_ESP32C6
+        default y
+        help
+            Reserve GPIO3 and GPIO14 for the XIAO RF switch and drive both low
+            before starting Bluetooth to select the onboard antenna.
+            Disable this option when using other development boards.
+    config REMOTE_BUTTON_GPIO
+        int "Active-low shutter button GPIO"
+        range 0 30
+        default 9
+    config REMOTE_LED_ENABLED
+        bool "Enable onboard addressable RGB LED"
         default n
-
-    config EXAMPLE_CI_ID
-        int
-        default 70
         help
-            This config the example id for CI test. Only for internal used.
-
-    config EXAMPLE_CI_PIPELINE_ID
-        int "The pipeline id for CI test"
-        default 0
-        help
-            This config the pipeline id for CI test. Only for internal used.
-
+            XIAO ESP32C6 has a single-color user LED, not an addressable RGB LED.
+            Leave disabled for XIAO; inspect controller state through USB logs.
+    config REMOTE_LED_GPIO
+        int "RGB LED GPIO"
+        depends on REMOTE_LED_ENABLED
+        range 0 30
+        default 8
 endmenu
